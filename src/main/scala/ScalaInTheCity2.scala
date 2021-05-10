@@ -24,40 +24,42 @@ object ScalaInTheCity2 extends App {
   object Github {
 
     trait Service {
-      def getRepos(language: String, limit: Int): ZIO[SttpClient with Github, Throwable, List[Repo]]
-      def getContributors(repo: Repo): ZIO[SttpClient with Github, Throwable, List[Contributor]]
+      def getRepos(language: String, limit: Int): ZIO[Github, Throwable, List[Repo]]
+      def getContributors(repo: Repo): ZIO[Github, Throwable, List[Contributor]]
     }
 
-    val live: ZLayer[SttpClient, Nothing, Github] =
-      ZLayer.fromService { _ =>
-        new Service {
-          def getRepos(language: String, limit: Int): ZIO[SttpClient with Github, Throwable, List[Repo]] = {
+    val live: ZLayer[SttpClient, Nothing, Github] = {
+      (for {
+        client <- ZIO.environment[SttpClient]
+      } yield new Service {
+          def getRepos(language: String, limit: Int): ZIO[Github, Throwable, List[Repo]] = {
             val request = basicRequest
               .get(
                 uri"https://api.github.com/search/repositories?q=language:$language&sort=stars&per_page=$limit"
               )
               .response(asJson[SearchResult])
-            sendR(request).map(_.body).absolve.map(_.items)
+            sendR(request).map(_.body).absolve.map(_.items).provide(client)
           }
-          def getContributors(repo: Repo): ZIO[SttpClient with Github, Throwable, List[Contributor]] = {
+          def getContributors(repo: Repo): ZIO[Github, Throwable, List[Contributor]] = {
             val request = basicRequest
               .get(
                 uri"https://api.github.com/repos/${repo.owner}/${repo.name}/contributors"
               )
               .response(asJson[List[Contributor]])
-            sendR(request).map(_.body).absolve
+            sendR(request).map(_.body).absolve.provide(client)
           }
-        }
+        }).toLayer
       }
 
     def getRepos(
                   language: String,
                   limit: Int
-                ): ZIO[Github with SttpClient, Throwable, List[Repo]] =
+                ): ZIO[Github, Throwable, List[Repo]] =
       ZIO.accessM(_.get.getRepos(language, limit))
 
-    def getContributors(repo: Repo): ZIO[Github with SttpClient, Throwable, List[Contributor]] =
+    def getContributors(repo: Repo): ZIO[Github, Throwable, List[Contributor]] =
       ZIO.accessM(_.get.getContributors(repo))
+
   }
 
   def notScalaSteward(contributors: List[Contributor]): List[Contributor] =
@@ -77,7 +79,7 @@ object ScalaInTheCity2 extends App {
   def topContributors(
                        language: String,
                        limit: Int
-                     ): ZIO[Github with SttpClient, Throwable, List[Contributor]] =
+                     ): ZIO[Github, Throwable, List[Contributor]] =
     Github
       .getRepos(language, limit)
       .flatMap(ZIO.foreachPar(_)(Github.getContributors))
@@ -89,9 +91,8 @@ object ScalaInTheCity2 extends App {
     AsyncHttpClientZioBackend.layer() >>> Github.live
 
   def run(args: List[String]): ZIO[ZEnv, Nothing, ExitCode] =
-    ZIO.succeed(ExitCode.success)
-//    topContributors("scala", 25)
-//      .flatMap(result => putStrLn(result.mkString("\n")))
-//      .provideCustomLayer(liveEnvironment) // よくわからん
-//      .exitCode
+    topContributors("scala", 25)
+      .flatMap(result => putStrLn(result.mkString("\n")))
+      .provideCustomLayer(liveEnvironment)
+      .exitCode
 }
